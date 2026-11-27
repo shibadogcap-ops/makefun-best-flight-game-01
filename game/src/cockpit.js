@@ -35,7 +35,7 @@ function mixHex(a, b, t) {
 }
 
 const fmt = (n) => Math.round(n).toLocaleString('en-US');
-const pad3 = (n) => String(Math.round(n) % 360).padStart(3, '0');
+const pad3 = (n) => String(((Math.round(n) % 360) + 360) % 360).padStart(3, '0');
 function clock(sec) {
   const t = Math.max(0, Math.floor(sec || 0));
   return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
@@ -326,7 +326,8 @@ function drawCompass(ctx, plane, pal, info) {
     const rel = ((m - hdg + 540) % 360) - 180;
     if (Math.abs(rel) > span / 2 + 5) continue;
     const sx = cx + (rel / span) * (x1 - x0);
-    const cardinal = CARD[((m % 360) + 360) % 360];
+    const norm = ((m % 360) + 360) % 360;
+    const cardinal = CARD[norm];
     const isCard = cardinal !== undefined;
     ctx.strokeStyle = isCard ? pal.ring : '#8b95a1';
     ctx.lineWidth = isCard ? 2 : 1;
@@ -338,7 +339,7 @@ function drawCompass(ctx, plane, pal, info) {
     ctx.font = isCard ? 'bold 15px system-ui, sans-serif' : FONT_SM;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const lbl = cardinal || (m % 30 === 0 ? pad3(m) : '');
+    const lbl = cardinal || (m % 30 === 0 ? pad3(norm) : '');
     if (lbl) ctx.fillText(lbl, sx, y0 + 9);
   }
   ctx.restore();
@@ -469,9 +470,10 @@ function drawLamps(ctx, plane, pal, hv, timeSec) {
   }
 }
 
-// 9. Centre digital plate: mission clock + score.
+// 9. Centre digital plate: mission clock + score. Sits in the gap between
+// the VSI dial (right edge ~533) and the fuel gauge (left edge ~866).
 function drawClockPlate(ctx, plane, info, pal) {
-  const w = 230, h = 62, x = W / 2 - w / 2 - 10, y = 592;
+  const w = 210, h = 60, x = 700 - w / 2, y = 594;
   ctx.fillStyle = '#0c0e11';
   ctx.strokeStyle = 'rgba(255,255,255,0.16)';
   ctx.lineWidth = 1;
@@ -548,22 +550,21 @@ export function drawHud(ctx, plane, info = {}) {
   ctx.fillText(`SPD ${fmt(hv.spdKt)} KT`, W - 184, 33);
   ctx.fillText(`HDG ${pad3(hv.hdgDeg)}°`, W - 184, 55);
 
-  // Top-centre: objective + subtext + progress.
+  // Top-centre: three stacked lines — objective, subtext, progress.
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = 'bold 21px system-ui, -apple-system, "Segoe UI", sans-serif';
-  ctx.fillStyle = '#ffffff';
   ctx.shadowColor = 'rgba(0,0,0,0.7)';
   ctx.shadowBlur = 6;
-  if (info.objectiveText) ctx.fillText(info.objectiveText, W / 2, 26);
+  ctx.font = 'bold 21px system-ui, -apple-system, "Segoe UI", sans-serif';
+  ctx.fillStyle = '#ffffff';
+  if (info.objectiveText) ctx.fillText(info.objectiveText, W / 2, 22);
   ctx.font = FONT_SM;
   ctx.fillStyle = 'rgba(230,236,242,0.85)';
-  if (info.subText) ctx.fillText(info.subText, W / 2, 48);
+  if (info.subText) ctx.fillText(info.subText, W / 2, 44);
   if (info.progressText) {
     ctx.fillStyle = pal.ringNext;
-    ctx.font = 'bold 14px system-ui, sans-serif';
-    const ow = ctx.measureText(info.objectiveText || '').width;
-    ctx.fillText(info.progressText, W / 2 + ow / 2 + 26, 28);
+    ctx.font = 'bold 13px system-ui, sans-serif';
+    ctx.fillText(info.progressText, W / 2, 66);
   }
   ctx.shadowBlur = 0;
 

@@ -3,14 +3,12 @@
 // steps where motion helps) and renders one complete frame through the same
 // drawWorld/drawHud/drawCockpit path the game uses. Unknown names -> 'cover'.
 
-import { STEP } from './config.js';
-import { createSortie, stepSortie, viewFor } from './missions.js';
+import { createSortie, viewFor } from './missions.js';
 import { RUNWAYS, FEATURES } from './world.js';
 import { drawWorld } from './render.js';
 import { drawHud, drawCockpit } from './cockpit.js';
 
 const DEG = Math.PI / 180;
-const NO_INPUT = { held: new Set(), pressed: new Set() };
 
 function pose(plane, fields) {
   Object.assign(plane, fields);
@@ -19,13 +17,13 @@ function pose(plane, fields) {
 
 // --- scenes -------------------------------------------------------------------
 
-// 'cover' — mission 1 mid-flight: over the Kestrel coast at ~110 m, heading
-// south toward ring 2 of 3 with ring 1 already done. The money shot.
+// 'cover' — mission 1 mid-flight: ~280 m short of ring 2 on its approach
+// line, ring centred large ahead above the message band, ring 1 done.
 function shotCover(seed) {
   const s = createSortie(0, seed);
   const p = pose(s.plane, {
-    x: 200, z: 1050, alt: 110,
-    headingDeg: 180, pitchDeg: 2, bankDeg: -8,
+    x: 211, z: 1123, alt: 80,
+    headingDeg: 172, pitchDeg: 2, bankDeg: -8,
     throttle: 0.7, speed: 55, fuel: 82, damage: 0,
     airborne: true, stalled: false, crashed: null, landed: null,
   });
@@ -57,31 +55,36 @@ function shotApproach(seed) {
   s.env = { windX: 2, windZ: 1, gustX: 0, gustZ: 0 };
   s.timerSec = 170;
   const v = viewFor(s);
+  v.world.rings = []; // landing phase — no flown rings in frame
   return { world: v.world, hud: v.hud, plane: p };
 }
 
-// 'drop' — mission 2 over Gull Rock: ~90 m, one crate under its parachute
-// below-ahead, drop zone circle on the water/rock ahead.
+// 'drop' — mission 2 over Gull Rock: ~70 m up, ~350 m short of the drop
+// zone on a heading toward it, one crate under its open parachute below
+// and ahead (~35 m under the plane) with the zone circle beyond.
 function shotDrop(seed) {
   const s = createSortie(1, seed);
   const DZ = FEATURES.dropZone;
+  const hDeg = 78;
+  const hr = hDeg * DEG;
+  const dirX = Math.sin(hr), dirZ = -Math.cos(hr);
+  const px = DZ.x - dirX * 350;
+  const pz = DZ.z - dirZ * 350;
   const p = pose(s.plane, {
-    x: DZ.x - 240, z: DZ.z + 140, alt: 92,
-    headingDeg: 62, pitchDeg: 1, bankDeg: -6,
+    x: px, z: pz, alt: 70,
+    headingDeg: hDeg, pitchDeg: -3, bankDeg: -6,
     throttle: 0.7, speed: 48, fuel: 78,
     airborne: true, stalled: false, crashed: null, landed: null,
   });
-  const h = p.headingDeg * DEG;
+  // Staged as ~1.4 s under canopy: below and ahead of the plane, chute open.
   s.crates = [{
-    x: p.x + Math.sin(h) * 170,
-    z: p.z - Math.cos(h) * 170,
-    alt: p.alt - 28,
-    vx: 2, vz: -1, vy: -6,
+    x: px + dirX * 200,
+    z: pz + dirZ * 200,
+    alt: p.alt - 34,
+    vx: 4, vz: -1, vy: -6,
     chute: true, landed: false, score: null,
   }];
   s.cratesCarried = 2; // one away, two still aboard
-  // A couple of seconds of real sim so the crate drifts under its canopy.
-  for (let i = 0; i < 40; i += 1) stepSortie(s, NO_INPUT, STEP);
   s.timerSec = 75;
   s.message = 'CRATE AWAY — 1 OF 3';
   s.messageT = 3;
@@ -89,20 +92,21 @@ function shotDrop(seed) {
   return { world: v.world, hud: v.hud, plane: p };
 }
 
-// 'storm' — mission 4 at dusk in rain: banked in the orbit near Lantern
-// Point, lighthouse beam sweeping, gusts shaking the camera.
+// 'storm' — mission 4 at dusk in rain: banked on the Lantern Point orbit,
+// lighthouse dead ahead with its beam sweeping into frame, gusts shaking
+// the camera. timerSec is chosen so the beam (ang = t*0.85) points west,
+// down-range of the camera.
 function shotStorm(seed) {
   const s = createSortie(3, seed);
   s.orbitDeg = 210;
-  const LH = FEATURES.lighthouse;
   const p = pose(s.plane, {
-    x: LH.x + 330, z: LH.z - 40, alt: 135,
-    headingDeg: 0, pitchDeg: 2, bankDeg: 25,
+    x: -1970, z: 1160, alt: 60,
+    headingDeg: 263, pitchDeg: 4, bankDeg: 25,
     throttle: 0.8, speed: 54, fuel: 55,
     airborne: true, stalled: false, crashed: null, landed: null,
   });
   s.env = { windX: 5, windZ: -4, gustX: 5, gustZ: -3.5 };
-  s.timerSec = 95;
+  s.timerSec = 310;
   const v = viewFor(s);
   return { world: v.world, hud: v.hud, plane: p };
 }

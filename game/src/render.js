@@ -122,7 +122,7 @@ function mapColour(t, P, pal) {
     case 'sand': return P.sand;
     case 'rock': return P.rock;
     case 'ash': return P.ash;
-    case 'town': return P.townWall;
+    case 'town': return mixHex(P.sand, P.fieldB, 0.5); // packed-earth streets
     case 'runway': return P.runway;
     case 'road': return pal.road;
     default: return P.seaNear;
@@ -278,10 +278,11 @@ function cloudSprite(pal) {
 }
 
 // Distant ridge profiles: fbm heights sampled across the screen each frame.
+// Kept deliberately low (~30 px) so they haze along the horizon, not slab it.
 const RIDGES = [
-  { seed: 11, amp: 46, par: 0.010, base: 0.10 },
-  { seed: 47, amp: 78, par: 0.022, base: 0.16 },
-  { seed: 83, amp: 120, par: 0.040, base: 0.24 },
+  { seed: 11, amp: 9, par: 0.010, base: 0.10 },
+  { seed: 47, amp: 15, par: 0.022, base: 0.16 },
+  { seed: 83, amp: 23, par: 0.040, base: 0.24 },
 ];
 
 // Rain streaks: precomputed drops, positions wrap by timeSec (no RNG in draw).
@@ -357,6 +358,27 @@ function drawSky(ctx, cam, pal, paletteName, plane, timeSec) {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, W, horizonY + 4);
 
+  // Ridge silhouettes with heading parallax — drawn BEFORE the sun so the
+  // disc always stays visible, kept thin and hazed toward the horizon.
+  const hdg = plane.headingDeg || 0;
+  for (let li = 0; li < RIDGES.length; li++) {
+    const R = RIDGES[li];
+    ctx.fillStyle = mixHex(pal.ridge[li], pal.horizon, 0.55);
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(-8, horizonY + 3);
+    const off = hdg * R.par * 57.3 + li * 913;
+    for (let sx = -8; sx <= W + 8; sx += 16) {
+      const n = fbm2(sx * 0.045 + off, li * 31.7, 90, R.seed, 3);
+      const y = horizonY - (2 + n * R.amp);
+      ctx.lineTo(sx, y);
+    }
+    ctx.lineTo(W + 8, horizonY + 3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
   // Sun.
   const sun = SUNS[paletteName] || SUNS.noon;
   const sx = W * sun.fx;
@@ -370,26 +392,6 @@ function drawSky(ctx, cam, pal, paletteName, plane, timeSec) {
   ctx.beginPath();
   ctx.arc(sx, sy, sun.r, 0, TAU);
   ctx.fill();
-
-  // Ridge silhouettes with heading parallax.
-  const hdg = plane.headingDeg || 0;
-  for (let li = 0; li < RIDGES.length; li++) {
-    const R = RIDGES[li];
-    ctx.fillStyle = pal.ridge[li];
-    ctx.globalAlpha = 0.55 + li * 0.18;
-    ctx.beginPath();
-    ctx.moveTo(-8, horizonY + 6);
-    const off = hdg * R.par * 57.3 + li * 913;
-    for (let sx = -8; sx <= W + 8; sx += 16) {
-      const n = fbm2(sx * 0.045 + off, li * 31.7, 90, R.seed, 3);
-      const y = horizonY - (4 + n * R.amp);
-      ctx.lineTo(sx, y);
-    }
-    ctx.lineTo(W + 8, horizonY + 6);
-    ctx.closePath();
-    ctx.fill();
-    ctx.globalAlpha = 1;
-  }
 
   // Drifting cloud billboards, far to near.
   const sprite = cloudSprite(pal);
@@ -476,7 +478,13 @@ function drawGround(ctx, cam, pal, map, horizonY) {
     ctx.rect(0, y, W, Math.min(rowH, H3D - y));
     ctx.clip();
     ctx.transform(a, b, c, d, e, f);
+    // Sample a 3-texel-tall slice (three offset draws at 1/3 alpha) so the
+    // water sparkle averages in and flat sea rows stop banding.
+    ctx.globalAlpha = 1 / 3;
+    ctx.drawImage(map, 0, -1);
     ctx.drawImage(map, 0, 0);
+    ctx.drawImage(map, 0, 1);
+    ctx.globalAlpha = 1;
     ctx.restore();
 
     // Distance fog toward the horizon colour.
@@ -485,49 +493,72 @@ function drawGround(ctx, cam, pal, map, horizonY) {
       ctx.fillStyle = rgba(horizonCol, fog);
       ctx.fillRect(0, y, W, rowH);
     }
+
+    // Very subtle darkening over open water only, stronger near the bottom.
+    let sea = 0;
+    for (const p of [p0, p1, pm]) {
+      if (groundType(p.x, p.z) === 'sea') sea += 1;
+    }
+    if (sea > 0) {
+      const depth = clamp((y - horizonY) / (H3D - horizonY), 0, 1);
+      ctx.fillStyle = `rgba(8,20,30,${(0.12 * (sea / 3) * (0.3 + 0.7 * depth)).toFixed(3)})`;
+      ctx.fillRect(0, y, W, rowH);
+    }
   }
 }
 
 // --- projected features -------------------------------------------------------
 
-function drawVolcano(ctx, cam, pal, v) {
-  const baseY = groundHeight(v.x, v.z);
-  const apex = project(cam, v.x, baseY + v.height, v.z);
-  const base = project(cam, v.x, baseY, v.z);
-  if (!apex || !base || base.z < 30) return;
-  const rb = (FOCAL * v.coneRadius * 0.92) / base.z;
-  const apexY = apex.y;
-  const baseYp = base.y;
-  const cx = base.x;
-  const midY = lerp(baseYp, apexY, 0.45);
+// Screen-space cone: project the base CENTRE and the apex, then draw a
+// triangle whose base is a horizontal segment centred on the projected base
+// point, half-width = radius * focal / distance. Because both anchors are
+// centre projections the silhouette can never flip when geometry passes
+// behind the camera. Returns the projected geometry for callers that want
+// to add detail (ash cap, rock skirt), or null when off-limits.
+function drawCone(ctx, cam, x, z, baseY, height, radius, lit, dark, sunX) {
+  const base = project(cam, x, baseY, z);
+  if (!base || base.z < 30 || base.z > 4000) return null;
+  const apex = project(cam, x, baseY + height, z);
+  if (!apex || apex.y >= base.y - 3) return null;
+  const half = (FOCAL * radius) / base.z;
+  const ax = apex.x, ay = apex.y;
+  const bx = base.x, by = base.y;
+  const litLeft = sunX <= bx;
+  // Two faces split at the base midpoint; the sun-side face stays lighter.
+  const faces = [
+    { col: litLeft ? lit : dark, pts: [[ax, ay], [bx - half, by], [bx, by]] },
+    { col: litLeft ? dark : lit, pts: [[ax, ay], [bx, by], [bx + half, by]] },
+  ];
+  for (const f of faces) {
+    ctx.fillStyle = f.col;
+    ctx.beginPath();
+    ctx.moveTo(f.pts[0][0], f.pts[0][1]);
+    ctx.lineTo(f.pts[1][0], f.pts[1][1]);
+    ctx.lineTo(f.pts[2][0], f.pts[2][1]);
+    ctx.closePath();
+    ctx.fill();
+  }
+  return { ax, ay, bx, by, half };
+}
 
-  // Two shaded faces of the cone + base skirt.
-  ctx.fillStyle = shadeHex(pal.P.rock, 0.8);
-  ctx.beginPath();
-  ctx.moveTo(cx - rb * 0.82, baseYp - rb * 0.08);
-  ctx.lineTo(cx - rb * 0.1, midY);
-  ctx.lineTo(cx, midY);
-  ctx.lineTo(cx, baseYp + rb * 0.3);
-  ctx.lineTo(cx - rb * 0.55, baseYp + rb * 0.16);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.fillStyle = pal.P.rock;
-  ctx.beginPath();
-  ctx.moveTo(cx + rb * 0.82, baseYp - rb * 0.08);
-  ctx.lineTo(cx + rb * 0.1, midY);
-  ctx.lineTo(cx, midY);
-  ctx.lineTo(cx, baseYp + rb * 0.3);
-  ctx.lineTo(cx + rb * 0.55, baseYp + rb * 0.16);
-  ctx.closePath();
-  ctx.fill();
+function drawVolcano(ctx, cam, pal, paletteName, v) {
+  // groundHeight at the summit already includes the cone itself — sample
+  // just outside the cone radius so the sprite base sits on real terrain.
+  const baseY = groundHeight(v.x + v.coneRadius + 5, v.z);
+  const sunX = (SUNS[paletteName] || SUNS.noon).fx * W;
+  const g = drawCone(ctx, cam, v.x, v.z, baseY, v.height, v.coneRadius * 0.9,
+    pal.P.rock, shadeHex(pal.P.rock, 0.78), sunX);
+  if (!g) return;
 
   // Ash cap near the summit.
+  const t = 0.16;
+  const cy = lerp(g.ay, g.by, t);
+  const ch = g.half * t;
   ctx.fillStyle = pal.P.ash;
   ctx.beginPath();
-  ctx.moveTo(cx - rb * 0.1, midY);
-  ctx.lineTo(cx + rb * 0.1, midY);
-  ctx.lineTo(cx, apexY + rb * 0.12);
+  ctx.moveTo(g.ax, g.ay);
+  ctx.lineTo(g.bx - ch, cy);
+  ctx.lineTo(g.bx + ch, cy);
   ctx.closePath();
   ctx.fill();
 }
@@ -535,10 +566,19 @@ function drawVolcano(ctx, cam, pal, v) {
 function drawLighthouse(ctx, cam, pal, paletteName, timeSec) {
   const L = FEATURES.lighthouse;
   const baseY = groundHeight(L.x, L.z);
-  const topY = baseY + 34;
+  const sunX = (SUNS[paletteName] || SUNS.noon).fx * W;
+
+  // The rocky point itself: a low grounded cone, never a flippable quad.
+  drawCone(ctx, cam, L.x, L.z, Math.max(0, baseY - 2), 9, 42,
+    pal.P.rock, shadeHex(pal.P.rock, 0.8), sunX);
+
+  // Tower: ~26 m tapered quad built from centre projections only, so it
+  // cannot invert when the base slips near the camera plane.
+  const topY = baseY + 26;
   const b = project(cam, L.x, baseY, L.z);
   const t = project(cam, L.x, topY, L.z);
-  if (!b || !t || b.z < 25) return;
+  if (!b || !t || b.z < 25 || b.z > 4000) return;
+  if (t.y >= b.y - 2) return;
   const wBot = (FOCAL * 5) / b.z, wTop = wBot * 0.55;
 
   // Tower: tapered quad, pale with a dark lantern room.
@@ -555,7 +595,7 @@ function drawLighthouse(ctx, cam, pal, paletteName, timeSec) {
   ctx.fillStyle = '#2a2d33';
   ctx.fillRect(t.x - wTop * 0.55, t.y - wTop * 2.6, wTop * 1.1, wTop * 1.1);
 
-  // Rotating beam at dusk.
+  // Rotating beam at dusk: translucent wedge fanning out from the lamp.
   if (paletteName === 'dusk') {
     const ang = timeSec * 0.85;
     const len = 750;
@@ -722,10 +762,12 @@ function drawKestrel(ctx, cam, pal, plane, timeSec) {
   let sx = p ? p.x : W / 2;
   let sy = p ? p.y : H3D - 60;
   sx = clamp(lerp(W / 2, sx, 0.35), W / 2 - 60, W / 2 + 60);
-  sy = clamp(sy, H3D - 170, H3D - 24);
   sy += Math.sin(timeSec * 2.1) * 1.4;                    // gentle bob
   sy -= (plane.pitchDeg || 0) * 1.4;                     // pitch shifts it
   sx += Math.sin(timeSec * 1.3) * 0.9;
+  // Hard screen limits: never above y=300, never under the cockpit panel.
+  sy = clamp(sy, 300, 478);
+  sx = clamp(sx, W / 2 - 60, W / 2 + 60);
 
   const bank = clamp((plane.bankDeg || 0) * DEG, -1.1, 1.1);
   const thr = clamp(plane.throttle || 0, 0, 1);
@@ -735,6 +777,7 @@ function drawKestrel(ctx, cam, pal, plane, timeSec) {
 
   ctx.save();
   ctx.translate(sx, sy);
+  ctx.scale(1.5, 1.5); // ~225 px wingspan on screen
 
   // Spinning prop disc at the nose (top of the sprite, far side).
   const phase = timeSec * (14 + thr * 46);
@@ -788,6 +831,12 @@ function drawKestrel(ctx, cam, pal, plane, timeSec) {
     ctx.moveTo(side * 9, -13);
     ctx.lineTo(tx, ty - 4.5);
     ctx.stroke();
+    // Tiny registration letters on the wing.
+    ctx.fillStyle = 'rgba(38,30,22,0.85)';
+    ctx.font = 'bold 6px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('MAIL', side * tipX * 0.55, -7 + side * tipY * 0.5);
   }
 
   // Fuselage: teardrop from nose (top) to tail (bottom).
@@ -807,9 +856,11 @@ function drawKestrel(ctx, cam, pal, plane, timeSec) {
   ctx.bezierCurveTo(-6, 26, -6, 14, 0, 6);
   ctx.fill();
 
-  // Mail satchel stripe along the spine.
+  // Mail satchel stripe along the spine + fuselage cheatline.
   ctx.fillStyle = stripe;
   ctx.fillRect(-2.2, -34, 4.4, 40);
+  ctx.fillStyle = shadeHex(skin, 0.82);
+  ctx.fillRect(-8.6, -16, 17.2, 2.6);
 
   // Canopy + glint.
   ctx.fillStyle = '#8fc3e0';
@@ -838,6 +889,10 @@ function drawKestrel(ctx, cam, pal, plane, timeSec) {
   ctx.lineTo(7, 38);
   ctx.closePath();
   ctx.fill();
+  // Tail stripes.
+  ctx.fillStyle = stripe;
+  ctx.fillRect(-27, 36.6, 18, 2.2);
+  ctx.fillRect(9, 36.6, 18, 2.2);
 
   // Fin with red tip (vertical stabilizer, seen edge-on at the tail).
   ctx.fillStyle = skin;
@@ -953,7 +1008,7 @@ export function drawWorld(ctx, view) {
 
   // Projected features, far to near.
   const items = [];
-  items.push({ z: 1e9, fn: () => drawVolcano(ctx, cam, pal, FEATURES.volcano) });
+  items.push({ z: 1e9, fn: () => drawVolcano(ctx, cam, pal, paletteName, FEATURES.volcano) });
   items.push({ z: project(cam, FEATURES.lighthouse.x, 20, FEATURES.lighthouse.z)?.z ?? 1e8,
     fn: () => drawLighthouse(ctx, cam, pal, paletteName, timeSec) });
   for (const h of HOUSES) {

@@ -138,7 +138,7 @@ export function groundHeight(x, z) {
 
 // --- surface type -----------------------------------------------------------
 
-const SAND_RIM = 0.8; // normalized ellipse distance where beaches start
+const SAND_RIM = 0.93; // only the outermost shoreline band is sand
 
 // Deterministic field-patchwork cell for the farm isles.
 function fieldCell(x, z) {
