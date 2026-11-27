@@ -17,13 +17,20 @@ function pose(plane, fields) {
 
 // --- scenes -------------------------------------------------------------------
 
-// 'cover' — mission 1 mid-flight: ~280 m short of ring 2 on its approach
-// line, ring centred large ahead above the message band, ring 1 done.
+// 'cover' — mission 1 mid-flight: ~340 m short of ring 2 on its approach
+// line, level with the ring so it hangs mid-frame above the terrain band,
+// ring 1 done.
 function shotCover(seed) {
   const s = createSortie(0, seed);
+  const ring = s.rings[1]; // the 'next' ring once ring 1 is done
+  const hDeg = 172;
+  const hRad = hDeg * DEG;
+  const back = 340; // metres short of the ring on its approach line
   const p = pose(s.plane, {
-    x: 211, z: 1123, alt: 80,
-    headingDeg: 172, pitchDeg: 2, bankDeg: -8,
+    x: ring.x - Math.sin(hRad) * back,
+    z: ring.z + Math.cos(hRad) * back,
+    alt: ring.alt,
+    headingDeg: hDeg, pitchDeg: 1, bankDeg: 5,
     throttle: 0.7, speed: 55, fuel: 82, damage: 0,
     airborne: true, stalled: false, crashed: null, landed: null,
   });
