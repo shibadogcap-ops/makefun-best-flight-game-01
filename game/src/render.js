@@ -303,6 +303,9 @@ const RAIN = [];
 // --- camera ------------------------------------------------------------------
 
 // Chase camera ~26 m behind and ~8 m above the plane, pitched with it.
+// A fixed down-tilt keeps the horizon in the upper third and lets terrain
+// fill the frame instead of a sky-heavy band at altitude.
+const LOOK_DOWN = 4.5 * DEG;
 function makeCamera(plane) {
   const h = (plane.headingDeg || 0) * DEG;
   const dirX = Math.sin(h), dirZ = -Math.cos(h);
@@ -311,7 +314,7 @@ function makeCamera(plane) {
   const gh = groundHeight(cx, cz);
   const cy = Math.max((plane.alt || 0) + 8, gh + 2.4);
 
-  const pitch = clamp((plane.pitchDeg || 0) * DEG, -0.5, 0.5);
+  const pitch = clamp((plane.pitchDeg || 0) * DEG, -0.5, 0.5) - LOOK_DOWN;
   const cp = Math.cos(pitch);
   // Forward (pitched), camera-right, camera-up basis vectors.
   const fx = dirX * cp, fy = Math.sin(pitch), fz = dirZ * cp;
@@ -445,6 +448,10 @@ function drawGround(ctx, cam, pal, map, horizonY) {
   const rowH = 4;
   const k = MAP / MAP_SPAN;
   const horizonCol = pal.horizon;
+  // Running sea-shade level: each strip eases toward its own target alpha
+  // instead of snapping, so neighbouring rows blend into one smooth wash
+  // over open water while land detail stays crisp underneath.
+  let seaA = 0;
 
   for (let y = Math.max(0, Math.floor(horizonY)); y < H3D; y += rowH) {
     const yc = y + rowH / 2;
@@ -495,13 +502,18 @@ function drawGround(ctx, cam, pal, map, horizonY) {
     }
 
     // Very subtle darkening over open water only, stronger near the bottom.
-    let sea = 0;
-    for (const p of [p0, p1, pm]) {
-      if (groundType(p.x, p.z) === 'sea') sea += 1;
+    // Fractional coverage across five samples keeps the coastline soft, and
+    // the exponential ease removes the hard step between adjacent strips.
+    let seaN = 0;
+    for (let i = 0; i < 5; i++) {
+      const sp = rayGround(cam, yc, (W * (i + 0.5)) / 5, cam.gh);
+      if (sp && groundType(sp.x, sp.z) === 'sea') seaN++;
     }
-    if (sea > 0) {
-      const depth = clamp((y - horizonY) / (H3D - horizonY), 0, 1);
-      ctx.fillStyle = `rgba(8,20,30,${(0.12 * (sea / 3) * (0.3 + 0.7 * depth)).toFixed(3)})`;
+    const depth = clamp((y - horizonY) / (H3D - horizonY), 0, 1);
+    const seaTarget = 0.12 * (seaN / 5) * (0.3 + 0.7 * depth);
+    seaA += (seaTarget - seaA) * 0.45;
+    if (seaA > 0.004) {
+      ctx.fillStyle = `rgba(8,20,30,${seaA.toFixed(3)})`;
       ctx.fillRect(0, y, W, rowH);
     }
   }
@@ -579,7 +591,7 @@ function drawLighthouse(ctx, cam, pal, paletteName, timeSec) {
   const t = project(cam, L.x, topY, L.z);
   if (!b || !t || b.z < 25 || b.z > 4000) return;
   if (t.y >= b.y - 2) return;
-  const wBot = (FOCAL * 5) / b.z, wTop = wBot * 0.55;
+  const wBot = (FOCAL * 6.5) / b.z, wTop = wBot * 0.55;
 
   // Tower: tapered quad, pale with a dark lantern room.
   ctx.fillStyle = pal.P.townWall;
@@ -595,7 +607,21 @@ function drawLighthouse(ctx, cam, pal, paletteName, timeSec) {
   ctx.fillStyle = '#2a2d33';
   ctx.fillRect(t.x - wTop * 0.55, t.y - wTop * 2.6, wTop * 1.1, wTop * 1.1);
 
+  // Lit lamp: warm glow so the tower reads at orbit range.
+  const lampY = t.y - wTop * 1.1;
+  const glowR = Math.max(6, wTop * 3.2);
+  const lg = ctx.createRadialGradient(t.x, lampY, 0, t.x, lampY, glowR);
+  lg.addColorStop(0, 'rgba(255,224,150,0.85)');
+  lg.addColorStop(0.35, 'rgba(255,200,110,0.35)');
+  lg.addColorStop(1, 'rgba(255,190,100,0)');
+  ctx.fillStyle = lg;
+  ctx.beginPath();
+  ctx.arc(t.x, lampY, glowR, 0, TAU);
+  ctx.fill();
+
   // Rotating beam at dusk: translucent wedge fanning out from the lamp.
+  // Two passes — a wide faint wash plus a brighter core — keep it readable
+  // when the tower sits ~600 m out in the rain.
   if (paletteName === 'dusk') {
     const ang = timeSec * 0.85;
     const len = 750;
@@ -603,13 +629,24 @@ function drawLighthouse(ctx, cam, pal, paletteName, timeSec) {
     const p1 = project(cam, L.x + Math.sin(ang - spread) * len, topY + 3, L.z - Math.cos(ang - spread) * len);
     const p2 = project(cam, L.x + Math.sin(ang + spread) * len, topY + 3, L.z - Math.cos(ang + spread) * len);
     if (p1 && p2) {
-      ctx.fillStyle = 'rgba(255,214,140,0.16)';
+      ctx.fillStyle = 'rgba(255,214,140,0.14)';
       ctx.beginPath();
-      ctx.moveTo(t.x, t.y - wTop);
+      ctx.moveTo(t.x, lampY);
       ctx.lineTo(p1.x, p1.y);
       ctx.lineTo(p2.x, p2.y);
       ctx.closePath();
       ctx.fill();
+      const p1c = project(cam, L.x + Math.sin(ang - spread * 0.45) * len, topY + 3, L.z - Math.cos(ang - spread * 0.45) * len);
+      const p2c = project(cam, L.x + Math.sin(ang + spread * 0.45) * len, topY + 3, L.z - Math.cos(ang + spread * 0.45) * len);
+      if (p1c && p2c) {
+        ctx.fillStyle = 'rgba(255,224,160,0.24)';
+        ctx.beginPath();
+        ctx.moveTo(t.x, lampY);
+        ctx.lineTo(p1c.x, p1c.y);
+        ctx.lineTo(p2c.x, p2c.y);
+        ctx.closePath();
+        ctx.fill();
+      }
     }
   }
 }
@@ -717,26 +754,42 @@ function drawCrate(ctx, cam, pal, crate) {
   const y = crate.landed ? gy + 0.9 : (crate.alt || gy + 30);
   const p = project(cam, crate.x, y, crate.z);
   if (!p) return;
-  const s = (FOCAL * 1.9) / p.z;
-  // Parachute canopy: arc above the crate while it is under canopy.
+  // ~1.8x the old footprint so a descending crate actually reads in frame.
+  const s = (FOCAL * 3.4) / p.z;
+  // Parachute canopy: filled warm-orange arc above the crate while it is
+  // under canopy, with thin shroud lines down to the box.
   if (!crate.landed) {
-    const cp = project(cam, crate.x, y + 5.5, crate.z);
+    const cp = project(cam, crate.x, y + 10, crate.z);
     if (cp) {
-      const cr = (FOCAL * 4.2) / cp.z;
-      ctx.strokeStyle = pal.P.townWall;
-      ctx.globalAlpha = 0.85;
-      ctx.lineWidth = Math.max(1.5, s * 0.22);
+      const cr = (FOCAL * 7.5) / cp.z;
+      // Shroud lines from the canopy rim to the crate's top corners.
+      ctx.strokeStyle = 'rgba(24,20,14,0.55)';
+      ctx.lineWidth = 1;
+      for (const f of [-0.85, -0.4, 0.4, 0.85]) {
+        ctx.beginPath();
+        ctx.moveTo(cp.x + f * cr, cp.y);
+        ctx.lineTo(p.x + f * s * 0.45, p.y - s * 0.3);
+        ctx.stroke();
+      }
+      // Canopy: bright warm-orange semi-disc with a darker rim and seams.
+      ctx.fillStyle = 'rgba(255,146,58,0.92)';
+      ctx.beginPath();
+      ctx.arc(cp.x, cp.y, cr, Math.PI, TAU);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,196,110,0.9)';
+      ctx.lineWidth = Math.max(1.2, s * 0.12);
       ctx.beginPath();
       ctx.arc(cp.x, cp.y, cr, Math.PI, TAU);
       ctx.stroke();
-      ctx.globalAlpha = 0.5;
-      ctx.beginPath();
-      ctx.moveTo(cp.x - cr, cp.y);
-      ctx.lineTo(p.x - s * 0.4, p.y - s * 0.4);
-      ctx.moveTo(cp.x + cr, cp.y);
-      ctx.lineTo(p.x + s * 0.4, p.y - s * 0.4);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
+      ctx.strokeStyle = 'rgba(140,60,20,0.5)';
+      ctx.lineWidth = 1;
+      for (const f of [-0.55, 0, 0.55]) {
+        ctx.beginPath();
+        ctx.moveTo(cp.x + f * cr, cp.y);
+        ctx.lineTo(cp.x + f * cr * 0.35, cp.y - cr * 0.92);
+        ctx.stroke();
+      }
     }
   }
   // The crate itself: small taped box.
@@ -779,28 +832,35 @@ function drawKestrel(ctx, cam, pal, plane, timeSec) {
   ctx.translate(sx, sy);
   ctx.scale(1.5, 1.5); // ~225 px wingspan on screen
 
-  // Spinning prop disc at the nose (top of the sprite, far side).
+  // Spinning prop at the nose (top of the sprite, far side): a clearer
+  // translucent disc with a bright sweeping arc so it reads at chase range.
   const phase = timeSec * (14 + thr * 46);
   ctx.save();
-  ctx.translate(0, -56);
-  ctx.fillStyle = `rgba(235,240,245,${(0.10 + 0.10 * thr).toFixed(3)})`;
+  ctx.translate(0, -52);
+  ctx.fillStyle = `rgba(235,240,245,${(0.16 + 0.14 * thr).toFixed(3)})`;
   ctx.beginPath();
-  ctx.ellipse(0, 0, 14, 4.6, 0, 0, TAU);
+  ctx.ellipse(0, 0, 15, 5, 0, 0, TAU);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(235,240,245,0.4)';
-  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = 'rgba(235,240,245,0.6)';
+  ctx.lineWidth = 1.4;
   ctx.beginPath();
-  ctx.ellipse(0, 0, 14, 4.6, 0, 0, TAU);
+  ctx.ellipse(0, 0, 15, 5, 0, 0, TAU);
+  ctx.stroke();
+  // Blade-sweep arc rotating with the prop.
+  ctx.strokeStyle = 'rgba(245,248,252,0.8)';
+  ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 15, 5, 0, phase * 0.9, phase * 0.9 + Math.PI * 1.15);
   ctx.stroke();
   // Rotating blade chords inside the disc.
   ctx.save();
   ctx.beginPath();
-  ctx.ellipse(0, 0, 14, 4.6, 0, 0, TAU);
+  ctx.ellipse(0, 0, 15, 5, 0, 0, TAU);
   ctx.clip();
-  ctx.strokeStyle = 'rgba(235,240,245,0.28)';
+  ctx.strokeStyle = 'rgba(235,240,245,0.34)';
   for (let i = 0; i < 3; i++) {
     const a = phase + (i * Math.PI) / 3;
-    const ca = Math.cos(a) * 15, sa = Math.sin(a) * 5.2;
+    const ca = Math.cos(a) * 16, sa = Math.sin(a) * 5.4;
     ctx.beginPath();
     ctx.moveTo(-ca, -sa);
     ctx.lineTo(ca, sa);
@@ -839,74 +899,83 @@ function drawKestrel(ctx, cam, pal, plane, timeSec) {
     ctx.fillText('MAIL', side * tipX * 0.55, -7 + side * tipY * 0.5);
   }
 
-  // Fuselage: teardrop from nose (top) to tail (bottom).
+  // Fuselage: teardrop from nose (top) to tail (bottom), ~12% shorter than
+  // the old slab so the sprite reads less top-down.
   ctx.fillStyle = skin;
   ctx.beginPath();
-  ctx.moveTo(0, -52);
-  ctx.bezierCurveTo(8, -44, 10, -28, 9, -8);
-  ctx.bezierCurveTo(8, 12, 6, 26, 0, 38);
-  ctx.bezierCurveTo(-6, 26, -8, 12, -9, -8);
-  ctx.bezierCurveTo(-10, -28, -8, -44, 0, -52);
+  ctx.moveTo(0, -46);
+  ctx.bezierCurveTo(8, -40, 10, -26, 9, -6);
+  ctx.bezierCurveTo(8, 10, 6, 22, 0, 33);
+  ctx.bezierCurveTo(-6, 22, -8, 10, -9, -6);
+  ctx.bezierCurveTo(-10, -26, -8, -40, 0, -46);
+  ctx.fill();
+  // Soft shadow the wing centre section throws across the fuselage.
+  const shg = ctx.createRadialGradient(0, -4, 1, 0, -4, 17);
+  shg.addColorStop(0, 'rgba(24,18,10,0.30)');
+  shg.addColorStop(1, 'rgba(24,18,10,0)');
+  ctx.fillStyle = shg;
+  ctx.beginPath();
+  ctx.ellipse(0, -4, 15, 10, 0, 0, TAU);
   ctx.fill();
   // Belly shade.
   ctx.fillStyle = 'rgba(0,0,0,0.16)';
   ctx.beginPath();
-  ctx.moveTo(0, 6);
-  ctx.bezierCurveTo(6, 14, 6, 26, 0, 37);
-  ctx.bezierCurveTo(-6, 26, -6, 14, 0, 6);
+  ctx.moveTo(0, 4);
+  ctx.bezierCurveTo(6, 12, 6, 22, 0, 32);
+  ctx.bezierCurveTo(-6, 22, -6, 12, 0, 4);
   ctx.fill();
 
   // Mail satchel stripe along the spine + fuselage cheatline.
   ctx.fillStyle = stripe;
-  ctx.fillRect(-2.2, -34, 4.4, 40);
+  ctx.fillRect(-2.2, -30, 4.4, 34);
   ctx.fillStyle = shadeHex(skin, 0.82);
-  ctx.fillRect(-8.6, -16, 17.2, 2.6);
+  ctx.fillRect(-8.6, -15, 17.2, 2.6);
 
   // Canopy + glint.
   ctx.fillStyle = '#8fc3e0';
   ctx.beginPath();
-  ctx.ellipse(0, -36, 4.6, 7.5, 0, 0, TAU);
+  ctx.ellipse(0, -32, 4.6, 6.8, 0, 0, TAU);
   ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,255,0.75)';
   ctx.lineWidth = 1.4;
   ctx.beginPath();
-  ctx.arc(-1, -38, 2.6, Math.PI * 0.9, Math.PI * 1.5);
+  ctx.arc(-1, -34, 2.6, Math.PI * 0.9, Math.PI * 1.5);
   ctx.stroke();
 
-  // Tailplane.
+  // Tailplane: wider span so the rear end reads broader, less top-down.
   ctx.fillStyle = wingCol;
   ctx.beginPath();
-  ctx.moveTo(-7, 30);
-  ctx.lineTo(-30, 36);
-  ctx.lineTo(-30, 41);
-  ctx.lineTo(-7, 38);
+  ctx.moveTo(-7, 25);
+  ctx.lineTo(-38, 30.5);
+  ctx.lineTo(-38, 35.5);
+  ctx.lineTo(-7, 32.5);
   ctx.closePath();
   ctx.fill();
   ctx.beginPath();
-  ctx.moveTo(7, 30);
-  ctx.lineTo(30, 36);
-  ctx.lineTo(30, 41);
-  ctx.lineTo(7, 38);
+  ctx.moveTo(7, 25);
+  ctx.lineTo(38, 30.5);
+  ctx.lineTo(38, 35.5);
+  ctx.lineTo(7, 32.5);
   ctx.closePath();
   ctx.fill();
   // Tail stripes.
   ctx.fillStyle = stripe;
-  ctx.fillRect(-27, 36.6, 18, 2.2);
-  ctx.fillRect(9, 36.6, 18, 2.2);
+  ctx.fillRect(-35, 32.6, 19, 2.2);
+  ctx.fillRect(16, 32.6, 19, 2.2);
 
   // Fin with red tip (vertical stabilizer, seen edge-on at the tail).
   ctx.fillStyle = skin;
   ctx.beginPath();
-  ctx.moveTo(-4.5, 14);
-  ctx.lineTo(0, -12);
-  ctx.lineTo(4.5, 14);
+  ctx.moveTo(-4.5, 12);
+  ctx.lineTo(0, -11);
+  ctx.lineTo(4.5, 12);
   ctx.closePath();
   ctx.fill();
   ctx.fillStyle = '#c8503c';
   ctx.beginPath();
-  ctx.moveTo(-3.1, -4);
-  ctx.lineTo(0, -12);
-  ctx.lineTo(3.1, -4);
+  ctx.moveTo(-3.1, -4.5);
+  ctx.lineTo(0, -11);
+  ctx.lineTo(3.1, -4.5);
   ctx.closePath();
   ctx.fill();
 
@@ -914,10 +983,10 @@ function drawKestrel(ctx, cam, pal, plane, timeSec) {
   ctx.strokeStyle = 'rgba(20,20,20,0.55)';
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(-4, 34);
-  ctx.lineTo(-6, 42);
-  ctx.moveTo(4, 34);
-  ctx.lineTo(6, 42);
+  ctx.moveTo(-4, 29);
+  ctx.lineTo(-6, 36);
+  ctx.moveTo(4, 29);
+  ctx.lineTo(6, 36);
   ctx.stroke();
 
   ctx.restore();

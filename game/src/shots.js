@@ -39,14 +39,14 @@ function shotCover(seed) {
 }
 
 // 'approach' — final to Port Saffron: ~35 m AGL on the runway heading,
-// 500 m short of the threshold, slight descent, runway centred ahead.
+// ~550 m out on final, slight descent, runway centred ahead.
 function shotApproach(seed) {
   const s = createSortie(0, seed);
   s.rings.forEach((r) => { r.status = 'done'; });
   const rwy = RUNWAYS[1]; // Port Saffron, heading 360
   const p = pose(s.plane, {
-    x: rwy.threshold.x - rwy.dirX * 500,
-    z: rwy.threshold.z - rwy.dirZ * 500,
+    x: rwy.x - rwy.dirX * 550,
+    z: rwy.z - rwy.dirZ * 550,
     alt: 36,
     headingDeg: rwy.headingDeg, pitchDeg: -4, bankDeg: 1,
     throttle: 0.35, speed: 33, verticalSpeed: -2.4,
@@ -60,8 +60,8 @@ function shotApproach(seed) {
 }
 
 // 'drop' — mission 2 over Gull Rock: ~70 m up, ~350 m short of the drop
-// zone on a heading toward it, one crate under its open parachute below
-// and ahead (~35 m under the plane) with the zone circle beyond.
+// zone on a heading toward it, one crate under its open parachute 120 m
+// ahead and 30 m below the plane, with the zone circle beyond.
 function shotDrop(seed) {
   const s = createSortie(1, seed);
   const DZ = FEATURES.dropZone;
@@ -76,11 +76,12 @@ function shotDrop(seed) {
     throttle: 0.7, speed: 48, fuel: 78,
     airborne: true, stalled: false, crashed: null, landed: null,
   });
-  // Staged as ~1.4 s under canopy: below and ahead of the plane, chute open.
+  // Staged as ~1.4 s under canopy: ~120 m ahead (115 fwd + 35 right so it
+  // clears the Kestrel sprite) and 30 m below the plane, chute open.
   s.crates = [{
-    x: px + dirX * 200,
-    z: pz + dirZ * 200,
-    alt: p.alt - 34,
+    x: px + dirX * 115 + Math.cos(hr) * 35,
+    z: pz + dirZ * 115 + Math.sin(hr) * 35,
+    alt: p.alt - 30,
     vx: 4, vz: -1, vy: -6,
     chute: true, landed: false, score: null,
   }];
@@ -93,20 +94,21 @@ function shotDrop(seed) {
 }
 
 // 'storm' — mission 4 at dusk in rain: banked on the Lantern Point orbit,
-// lighthouse dead ahead with its beam sweeping into frame, gusts shaking
-// the camera. timerSec is chosen so the beam (ang = t*0.85) points west,
-// down-range of the camera.
+// ~640 m out with the lighthouse standing in the left middle distance, its
+// beam sweeping across the frame, gusts shaking the camera. timerSec is
+// chosen so the beam (ang = t*0.85 ≈ 232°) fans up and to the right of the
+// tower, both wedge tips inside the view.
 function shotStorm(seed) {
   const s = createSortie(3, seed);
   s.orbitDeg = 210;
   const p = pose(s.plane, {
-    x: -1970, z: 1160, alt: 60,
-    headingDeg: 263, pitchDeg: 4, bankDeg: 25,
+    x: -1889, z: 710, alt: 185,
+    headingDeg: 242, pitchDeg: -2, bankDeg: -20,
     throttle: 0.8, speed: 54, fuel: 55,
     airborne: true, stalled: false, crashed: null, landed: null,
   });
   s.env = { windX: 5, windZ: -4, gustX: 5, gustZ: -3.5 };
-  s.timerSec = 310;
+  s.timerSec = 160;
   const v = viewFor(s);
   return { world: v.world, hud: v.hud, plane: p };
 }
